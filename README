@@ -15,7 +15,9 @@ Functions:
 - Sends the sensor data over udp
 
 Future functions:
-- Send the data over a multicast or broadcast channel
+- Send the data over a multicast or broadcast UDP channel
+- Add a TCP negotiation channel for selecting sensors, ranges, etc...
+-- Create a generic interface that can be implemented by other applications
 
 Todo:
 - Make multiple classes for a neater structure
