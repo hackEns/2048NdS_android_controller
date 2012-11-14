@@ -1,0 +1,23 @@
+All code in this repo is licensed under the gpl.
+
+Author: Rik Vermeer
+Repo: https://github.com/rikvermeer
+
+
+
+This is an Android 4.1 application created for my Samsung Galaxy S3
+
+It sends sensor data over udp to my raspberry pi which controls PWM GPIO ports.
+The raspberry pi client application is found in one the other repo's at https://github.com/rikvermeer
+
+Functions:
+- Reads sensors
+- Sends the sensor data over udp
+
+Future functions:
+- Send the data over a multicast or broadcast channel
+
+Todo:
+- Make multiple classes for a neater structure
+- Make threads for sending data
+- Make the GUI
