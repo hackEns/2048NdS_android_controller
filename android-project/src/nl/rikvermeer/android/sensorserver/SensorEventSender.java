@@ -35,7 +35,6 @@ public class SensorEventSender extends AsyncTask<String, Integer, String> implem
   private boolean magOk = false;
   public float[] mGravs = new float[3];
   private float[] mGeoMags = new float[3];
-  public float[] mOrientation = new float[3];
   public float[] mRotationM = new float[16];
 	
 	public SensorEventSender(Context context, SensorEventSenderCallbackListener... listeners) {
@@ -114,7 +113,6 @@ public class SensorEventSender extends AsyncTask<String, Integer, String> implem
     switch (event.sensor.getType()) {
         case Sensor.TYPE_ROTATION_VECTOR:
                 SensorManager.getRotationMatrixFromVector(mRotationM, event.values);
-                SensorManager.getOrientation(mRotationM, mOrientation);
                 new SensorEventSender(this.context, listeners).execute("");
                 //Log.d("plop", "using RV");
                 return;
@@ -131,7 +129,6 @@ public class SensorEventSender extends AsyncTask<String, Integer, String> implem
     }
     if (magOk && gravOk) {
         SensorManager.getRotationMatrix(mRotationM, null, mGravs, mGeoMags);
-        SensorManager.getOrientation(mRotationM, mOrientation);
         new SensorEventSender(this.context, listeners).execute("");
     }
 	}
