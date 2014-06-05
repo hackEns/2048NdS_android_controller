@@ -26,50 +26,109 @@ import android.support.v4.app.FragmentPagerAdapter;
 import android.support.v4.view.ViewPager;
 import android.view.Gravity;
 import android.view.LayoutInflater;
+import android.widget.LinearLayout;
+import android.widget.Button;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
 import android.util.Log;
-
-import java.nio.ByteBuffer;
-import java.nio.FloatBuffer;
-import java.nio.ByteOrder;
-import android.opengl.GLU;
-import android.opengl.GLSurfaceView;
-import android.opengl.GLSurfaceView.Renderer;
-import javax.microedition.khronos.egl.EGLConfig;
-import javax.microedition.khronos.opengles.GL10;
+import android.text.method.ScrollingMovementMethod;
+import android.text.format.Time;
 
 public class MainActivity extends FragmentActivity implements SensorEventSenderCallbackListener {
 
     private static final int RESULT_SETTINGS = 1;
     private SensorManager mSensorManager;
+    private Sensor mRotSensor;
     private Sensor mAccelerometer;
     private Sensor mMagnetic;
     private SensorEventSender listener;
     private WakeLock wakeLock;
-    private OpenGLRenderer renderer;
+    private TextView textview;
+
+    private boolean unset = true;
+
+    private float pitch = Float.POSITIVE_INFINITY;
+    private float roll = Float.POSITIVE_INFINITY;
+    private float yaw = Float.POSITIVE_INFINITY;
+
+    private int upvec = -1;
+    private float updir = 0;
+    private float thresh = 0.8f;
+    private float leftvec[] = new float[3];
+    private float fwdvec[] = new float[3];
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        fwdvec[0] = 1;
+        fwdvec[1] = 0;
+
+        leftvec[0] = 0;
+        leftvec[1] = 1;
+
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
+        LinearLayout view = new LinearLayout(this);
 
-        //StrictMode.ThreadPolicy policy = new StrictMode.ThreadPolicy.Builder().permitAll().build();
-        //StrictMode.setThreadPolicy(policy);
+        Button calib_btn = new Button(this);
+        calib_btn.setText("Calibrate");
+        calib_btn.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                calibrate();
+            }
+        });
+        view.addView(calib_btn);
 
+        textview = new TextView(this);
+        textview.setText("");
+        textview.setMovementMethod(new ScrollingMovementMethod());
+        textview.setSelected(true);
+        view.addView(textview);
 
-        GLSurfaceView view = new GLSurfaceView(this);
-        renderer = new OpenGLRenderer();
-        view.setRenderer(renderer);
         setContentView(view);
         listener = new SensorEventSender(this, this);
 
         PowerManager powerManager = (PowerManager) this.getSystemService(Context.POWER_SERVICE);
-        wakeLock = powerManager.newWakeLock(PowerManager.FULL_WAKE_LOCK, "SensorSender Lock");
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SensorSender Lock");
         wakeLock.acquire();
+
+        if(mSensorManager == null) {
+          mSensorManager = (SensorManager)getSystemService(SENSOR_SERVICE);
+        }
+        if(mRotSensor == null) {
+          mRotSensor = mSensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        }
+        if (mRotSensor == null) {
+          if(mAccelerometer == null) {
+            mAccelerometer = mSensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+          }
+          if(mMagnetic == null) {
+            mMagnetic = mSensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
+          }
+          mSensorManager.registerListener(listener, mAccelerometer, SensorManager.SENSOR_DELAY_GAME);
+          mSensorManager.registerListener(listener, mMagnetic, SensorManager.SENSOR_DELAY_GAME);
+        } else {
+          mSensorManager.registerListener(listener, mRotSensor, 10000);
+        }
+    }
+
+    // Calibration: le device doit être à plat comme posé sur une table avec l'écran visible
+    //
+    // On sélectionne les vecteurs correspondant à "aller vers le haut/vers
+    // l'avant" et "aller vers la gauche"
+    private void calibrate() {
+        fwdvec[0] = listener.mRotationM[1];
+        fwdvec[1] = listener.mRotationM[5];
+        leftvec[0] = -listener.mRotationM[0];
+        leftvec[1] = -listener.mRotationM[4];
+        float fwdnorm = (float) Math.sqrt(fwdvec[0] * fwdvec[0] + fwdvec[1] * fwdvec[1]);
+        fwdvec[0] /= fwdnorm;
+        fwdvec[1] /= fwdnorm;
+        float leftnorm = (float) Math.sqrt(leftvec[0] * leftvec[0] + leftvec[1] * leftvec[1]);
+        leftvec[0] /= leftnorm;
+        leftvec[1] /= leftnorm;
+        addText("Calibration done");
     }
 
     @Override
@@ -93,25 +152,8 @@ public class MainActivity extends FragmentActivity implements SensorEventSenderC
     }
 
     @Override
-    protected void onResume() {
-        super.onResume();
-        if(mSensorManager == null) {
-        	mSensorManager = (SensorManager)getSystemService(SENSOR_SERVICE);
-        }
-        if(mAccelerometer == null) {
-        	mAccelerometer = mSensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-        }
-        if(mMagnetic == null) {
-          mMagnetic = mSensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
-        }
-        mSensorManager.registerListener(listener, mAccelerometer, SensorManager.SENSOR_DELAY_GAME);
-        mSensorManager.registerListener(listener, mMagnetic, SensorManager.SENSOR_DELAY_GAME);
-        wakeLock.acquire();
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
+    protected void onDestroy() {
+        super.onDestroy();
         if(mSensorManager == null) {
         	mSensorManager = (SensorManager)getSystemService(SENSOR_SERVICE);
         }
@@ -119,133 +161,110 @@ public class MainActivity extends FragmentActivity implements SensorEventSenderC
         wakeLock.release();
     }
 
+    private void getUpVec() {
+      int max_i = 0;
+      float max_z = 0;
+      for (int i = 0; i < 3; ++i) {
+        float z = Math.abs(listener.mRotationM[8+i]);
+        if (z > max_z) {
+          max_z = z;
+          max_i = i;
+        }
+      }
+      upvec = max_i;
+      updir = Math.signum(listener.mRotationM[8+max_i]);
+      max_i = 0;
+      float max_dot = 0;
+      for (int i = 0; i < 3; ++i) {
+        float dot = fwdvec[0] * listener.mRotationM[0+i] + fwdvec[1] * listener.mRotationM[4+i];
+        if (Math.abs(dot) > Math.abs(max_dot)) {
+          max_dot = dot;
+          max_i = i;
+        }
+      }
+
+      if (Math.abs(max_dot) > 0.6) {
+        float fwddir = Math.signum(max_dot);
+        fwdvec[0] = fwddir * listener.mRotationM[0+max_i];
+        fwdvec[1] = fwddir * listener.mRotationM[4+max_i];
+        float fwdnorm = (float) Math.sqrt(fwdvec[0] * fwdvec[0] + fwdvec[1] * fwdvec[1]);
+        fwdvec[0] /= fwdnorm;
+        fwdvec[1] /= fwdnorm;
+
+        leftvec[0] = -fwdvec[1];
+        leftvec[1] = fwdvec[0];
+        addText("Reference updated");
+      }
+    }
+
+    private void addText(String add) {
+      Time now = new Time();
+      now.setToNow();
+      textview.append(now.format("%H:%M:%S") + ": " + add + "\n");
+      textview.post(new Runnable() {
+        public void run() {
+          Log.d("nds_sensor", textview.getLayout() + " |");
+          final int scrollAmount = textview.getLayout().getLineTop(textview.getLineCount()) - textview.getHeight();
+          if (scrollAmount > 0)
+              textview.scrollTo(0, scrollAmount);
+          else
+              textview.scrollTo(0, 0);
+        }
+      });
+    }
+
     @Override
     public void onPostExecute(String result) {
-      renderer.roll = listener.mOrientation[2];
-      renderer.pitch = listener.mOrientation[1];
-      renderer.yaw = listener.mOrientation[0];
+      if (result.length() != 0) return;
+
+      if (unset) {
+        unset = false;
+        getUpVec();
+      } else {
+        float vec[] = new float[3];
+        vec[0] = updir * listener.mRotationM[0+upvec];
+        vec[1] = updir * listener.mRotationM[4+upvec];
+        vec[2] = updir * listener.mRotationM[8+upvec];
+
+        /*
+        if (upvec != 1) {
+          fwdvec[0] = listener.mRotationM[1];
+          fwdvec[1] = listener.mRotationM[5];
+        } else {
+          fwdvec[0] = - updir * listener.mRotationM[0];
+          fwdvec[1] = - updir * listener.mRotationM[4];
+        }
+        if (upvec != 2) {
+          leftvec[0] = listener.mRotationM[2];
+          leftvec[1] = listener.mRotationM[6];
+          if (upvec == 0) {
+            leftvec[0] *= updir;
+            leftvec[1] *= updir;
+          }
+        } else {
+          leftvec[0] = - updir * listener.mRotationM[0];
+          leftvec[1] = - updir * listener.mRotationM[4];
+        }
+        */
+
+        if (vec[0] * fwdvec[0] + vec[1] * fwdvec[1] < - thresh) {
+          addText("DOWN");
+          listener.sendUDP("DOWN\n");
+        } else if (vec[0] * fwdvec[0] + vec[1] * fwdvec[1] > thresh) {
+          addText("UP");
+          listener.sendUDP("UP\n");
+        } else if (vec[0] * leftvec[0] + vec[1] * leftvec[1] < - thresh) {
+          addText("RIGHT");
+          listener.sendUDP("RIGHT\n");
+        } else if (vec[0] * leftvec[0] + vec[1] * leftvec[1] > thresh) {
+          addText("LEFT");
+          listener.sendUDP("LEFT\n");
+        } else {
+          return;
+        }
+        getUpVec();
+
+        //listener.sendUDP("{"+vec[0]+","+vec[1]+","+vec[2]+"}\n");
+      }
     }
 }
-
-class OpenGLRenderer implements Renderer {
-
-        private Cube mCube = new Cube();
-        public float roll;
-        public float pitch;
-        public float yaw;
-
-        @Override
-        public void onSurfaceCreated(GL10 gl, EGLConfig config) {
-            gl.glClearColor(0.0f, 0.0f, 0.0f, 0.5f);
-
-            gl.glClearDepthf(1.0f);
-            gl.glEnable(GL10.GL_DEPTH_TEST);
-            gl.glDepthFunc(GL10.GL_LEQUAL);
-
-            gl.glHint(GL10.GL_PERSPECTIVE_CORRECTION_HINT,
-                      GL10.GL_NICEST);
-
-        }
-
-        @Override
-        public void onDrawFrame(GL10 gl) {
-            gl.glClear(GL10.GL_COLOR_BUFFER_BIT | GL10.GL_DEPTH_BUFFER_BIT);
-            gl.glLoadIdentity();
-
-            gl.glTranslatef(0.0f, 0.0f, -10.0f);
-            gl.glRotatef((float) Math.toDegrees(roll), 0.0f, 0.0f, 1.0f);
-            //gl.glRotatef((float) Math.toDegrees(yaw), 0.0f, 1.0f, 0.0f);
-            //gl.glRotatef((float) Math.toDegrees(pitch), 1.0f, 0.0f, 0.0f);
-					  Log.d("plop", "Roll: " + roll);
-					  Log.d("plop", "Pitch: " + pitch);
-					  Log.d("plop", "Yaw: " + yaw);
-
-            mCube.draw(gl);
-
-            gl.glLoadIdentity();
-        }
-
-        @Override
-        public void onSurfaceChanged(GL10 gl, int width, int height) {
-            gl.glViewport(0, 0, width, height);
-            gl.glMatrixMode(GL10.GL_PROJECTION);
-            gl.glLoadIdentity();
-            GLU.gluPerspective(gl, 45.0f, (float)width / (float)height, 0.1f, 100.0f);
-            gl.glViewport(0, 0, width, height);
-
-            gl.glMatrixMode(GL10.GL_MODELVIEW);
-            gl.glLoadIdentity();
-        }
-}
-
-class Cube {
-
-    private FloatBuffer mVertexBuffer;
-    private FloatBuffer mColorBuffer;
-    private ByteBuffer  mIndexBuffer;
-
-    private float vertices[] = {
-                                -1.0f, -1.0f, -1.0f,
-                                1.0f, -1.0f, -1.0f,
-                                1.0f,  1.0f, -1.0f,
-                                -1.0f, 1.0f, -1.0f,
-                                -1.0f, -1.0f,  1.0f,
-                                1.0f, -1.0f,  1.0f,
-                                1.0f,  1.0f,  1.0f,
-                                -1.0f,  1.0f,  1.0f
-                                };
-    private float colors[] = {
-                               0.0f,  1.0f,  0.0f,  1.0f,
-                               0.0f,  1.0f,  0.0f,  1.0f,
-                               1.0f,  0.5f,  0.0f,  1.0f,
-                               1.0f,  0.5f,  0.0f,  1.0f,
-                               1.0f,  0.0f,  0.0f,  1.0f,
-                               1.0f,  0.0f,  0.0f,  1.0f,
-                               0.0f,  0.0f,  1.0f,  1.0f,
-                               1.0f,  0.0f,  1.0f,  1.0f
-                            };
-
-    private byte indices[] = {
-                              0, 4, 5, 0, 5, 1,
-                              1, 5, 6, 1, 6, 2,
-                              2, 6, 7, 2, 7, 3,
-                              3, 7, 4, 3, 4, 0,
-                              4, 7, 6, 4, 6, 5,
-                              3, 0, 1, 3, 1, 2
-                              };
-
-    public Cube() {
-            ByteBuffer byteBuf = ByteBuffer.allocateDirect(vertices.length * 4);
-            byteBuf.order(ByteOrder.nativeOrder());
-            mVertexBuffer = byteBuf.asFloatBuffer();
-            mVertexBuffer.put(vertices);
-            mVertexBuffer.position(0);
-
-            byteBuf = ByteBuffer.allocateDirect(colors.length * 4);
-            byteBuf.order(ByteOrder.nativeOrder());
-            mColorBuffer = byteBuf.asFloatBuffer();
-            mColorBuffer.put(colors);
-            mColorBuffer.position(0);
-
-            mIndexBuffer = ByteBuffer.allocateDirect(indices.length);
-            mIndexBuffer.put(indices);
-            mIndexBuffer.position(0);
-    }
-
-    public void draw(GL10 gl) {
-            gl.glFrontFace(GL10.GL_CW);
-
-            gl.glVertexPointer(3, GL10.GL_FLOAT, 0, mVertexBuffer);
-            gl.glColorPointer(4, GL10.GL_FLOAT, 0, mColorBuffer);
-
-            gl.glEnableClientState(GL10.GL_VERTEX_ARRAY);
-            gl.glEnableClientState(GL10.GL_COLOR_ARRAY);
-
-            gl.glDrawElements(GL10.GL_TRIANGLES, 36, GL10.GL_UNSIGNED_BYTE,
-                            mIndexBuffer);
-
-            gl.glDisableClientState(GL10.GL_VERTEX_ARRAY);
-            gl.glDisableClientState(GL10.GL_COLOR_ARRAY);
-    }
-}
-

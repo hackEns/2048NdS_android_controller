@@ -18,19 +18,25 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.preference.PreferenceManager;
 
+import android.app.Activity;
+import android.view.Surface;
+
 public class SensorEventSender extends AsyncTask<String, Integer, String> implements SensorEventListener {
   private static SharedPreferences prefs;
   private Context context;
 	private SensorEventSenderCallbackListener[] listeners;
-	private InetAddress targetInetAddress;
+	private InetAddress targetInetAddress = null;
+  private String hostname;
 	private int port;
 	private static final int SOURCE_PORT = 5555;
 	private static DatagramSocket socket;
 
-  private float[] mGravs = new float[3];
+  private boolean gravOk = false;
+  private boolean magOk = false;
+  public float[] mGravs = new float[3];
   private float[] mGeoMags = new float[3];
   public float[] mOrientation = new float[3];
-  private float[] mRotationM = new float[9];
+  public float[] mRotationM = new float[16];
 	
 	public SensorEventSender(Context context, SensorEventSenderCallbackListener... listeners) {
 		if(listeners != null) {
@@ -42,13 +48,8 @@ public class SensorEventSender extends AsyncTask<String, Integer, String> implem
 		//this.targetInetAddress = targetInetAddress;
     prefs = PreferenceManager.getDefaultSharedPreferences(this.context);
 
-    String hostname = prefs.getString("host", "NULL");
-    port = Integer.valueOf(prefs.getString("port", "-1"));
-		try {
-			targetInetAddress = InetAddress.getByName(hostname);
-		} catch (UnknownHostException e) {
-			e.printStackTrace();
-		}
+    hostname = prefs.getString("host", "192.168.1.13");
+    port = Integer.valueOf(prefs.getString("port", "5555"));
 	}
 	
 	public synchronized static DatagramSocket getSocket() {
@@ -67,6 +68,17 @@ public class SensorEventSender extends AsyncTask<String, Integer, String> implem
 
 	@Override
 	protected synchronized String doInBackground(String... params) {
+    // Ignore empty messages
+    if (params[0].length() == 0)
+      return params[0];
+    Log.d("plopounet", params[0]);
+		if (this.targetInetAddress == null) {
+      try {
+        targetInetAddress = InetAddress.getByName(hostname);
+      } catch (UnknownHostException e) {
+        e.printStackTrace();
+      }
+    }
 		DatagramPacket packet = new DatagramPacket(params[0].getBytes(), params[0].length(),
 				this.targetInetAddress, this.port);
 		try {
@@ -100,19 +112,33 @@ public class SensorEventSender extends AsyncTask<String, Integer, String> implem
 	@Override
 	public void onSensorChanged(SensorEvent event) {
     switch (event.sensor.getType()) {
+        case Sensor.TYPE_ROTATION_VECTOR:
+                SensorManager.getRotationMatrixFromVector(mRotationM, event.values);
+                SensorManager.getOrientation(mRotationM, mOrientation);
+                new SensorEventSender(this.context, listeners).execute("");
+                //Log.d("plop", "using RV");
+                return;
         case Sensor.TYPE_ACCELEROMETER:
                 System.arraycopy(event.values, 0, mGravs, 0, 3);
+                gravOk = true;
                 break;
         case Sensor.TYPE_MAGNETIC_FIELD:
                 System.arraycopy(event.values, 0, mGeoMags, 0, 3);
+                magOk = true;
                 break;
         default:
                 return;
     }
-    SensorManager.getRotationMatrix(mRotationM, null, mGravs, mGeoMags);
-    SensorManager.getOrientation(mRotationM, mOrientation);
-		new SensorEventSender(this.context, listeners).execute("{AZIMUTH:" + mOrientation[0] + ", ROLL:" + mOrientation[1] + ", YAW:" + mOrientation[2] + "}\n");
+    if (magOk && gravOk) {
+        SensorManager.getRotationMatrix(mRotationM, null, mGravs, mGeoMags);
+        SensorManager.getOrientation(mRotationM, mOrientation);
+        new SensorEventSender(this.context, listeners).execute("");
+    }
 	}
+
+  public void sendUDP(String message) {
+      new SensorEventSender(this.context, listeners).execute(message);
+  }
 }
 
 interface SensorEventSenderCallbackListener {
