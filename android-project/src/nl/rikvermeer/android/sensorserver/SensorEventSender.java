@@ -70,7 +70,7 @@ public class SensorEventSender extends AsyncTask<String, Integer, String> implem
     // Ignore empty messages
     if (params[0].length() == 0)
       return params[0];
-    Log.d("plopounet", params[0]);
+    Log.d("nds_sensor_network", params[0]);
 		if (this.targetInetAddress == null) {
       try {
         targetInetAddress = InetAddress.getByName(hostname);

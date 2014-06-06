@@ -8,15 +8,17 @@ import java.net.InetAddress;
 import nl.rikvermeer.android.sensorserver.R;
 
 import android.content.Context;
+import android.content.BroadcastReceiver;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.net.DhcpInfo;
 import android.net.wifi.WifiManager;
-import android.content.Intent;
 import android.os.Bundle;
-import android.os.StrictMode;
+import android.os.Handler;
 import android.os.PowerManager;
 import android.os.PowerManager.WakeLock;
 import android.support.v4.app.Fragment;
@@ -26,6 +28,7 @@ import android.support.v4.app.FragmentPagerAdapter;
 import android.support.v4.view.ViewPager;
 import android.view.Gravity;
 import android.view.LayoutInflater;
+import android.text.Layout;
 import android.widget.LinearLayout;
 import android.widget.Button;
 import android.view.Menu;
@@ -46,6 +49,7 @@ public class MainActivity extends FragmentActivity implements SensorEventSenderC
     private Sensor mMagnetic;
     private SensorEventSender listener;
     private WakeLock wakeLock;
+    private WakeLock wakeLock2;
     private TextView textview;
 
     private boolean unset = true;
@@ -59,6 +63,9 @@ public class MainActivity extends FragmentActivity implements SensorEventSenderC
     private float thresh = 0.8f;
     private float leftvec[] = new float[3];
     private float fwdvec[] = new float[3];
+
+    private long SCREEN_OFF_RECEIVER_DELAY = 1000;
+    private String TAG = "nds_sensor";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -90,7 +97,7 @@ public class MainActivity extends FragmentActivity implements SensorEventSenderC
         listener = new SensorEventSender(this, this);
 
         PowerManager powerManager = (PowerManager) this.getSystemService(Context.POWER_SERVICE);
-        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SensorSender Lock");
+        wakeLock = powerManager.newWakeLock(PowerManager.SCREEN_DIM_WAKE_LOCK, TAG);
         wakeLock.acquire();
 
         if(mSensorManager == null) {
@@ -106,12 +113,48 @@ public class MainActivity extends FragmentActivity implements SensorEventSenderC
           if(mMagnetic == null) {
             mMagnetic = mSensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
           }
+        }
+        registerListener();
+
+        registerReceiver(mReceiver, new IntentFilter(Intent.ACTION_SCREEN_OFF));
+    }
+
+    private void registerListener() {
+        if (mRotSensor == null) {
           mSensorManager.registerListener(listener, mAccelerometer, SensorManager.SENSOR_DELAY_GAME);
           mSensorManager.registerListener(listener, mMagnetic, SensorManager.SENSOR_DELAY_GAME);
         } else {
           mSensorManager.registerListener(listener, mRotSensor, 10000);
         }
     }
+
+    private void unregisterListener() {
+        mSensorManager.unregisterListener(listener);
+    }
+
+    public BroadcastReceiver mReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            Log.i(TAG, "onReceive("+intent+")");
+
+            if (!intent.getAction().equals(Intent.ACTION_SCREEN_OFF)) {
+                return;
+            }
+
+            Runnable runnable = new Runnable() {
+                public void run() {
+                    Log.i(TAG, "Runnable executing.");
+                    PowerManager powerManager = (PowerManager) MainActivity.this.getSystemService(Context.POWER_SERVICE);
+                    wakeLock2 = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SensorSender Lock");
+                    wakeLock2.acquire();
+                    unregisterListener();
+                    registerListener();
+                }
+            };
+
+            new Handler().postDelayed(runnable, SCREEN_OFF_RECEIVER_DELAY);
+        }
+    };
 
     // Calibration: le device doit être à plat comme posé sur une table avec l'écran visible
     //
@@ -154,10 +197,7 @@ public class MainActivity extends FragmentActivity implements SensorEventSenderC
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if(mSensorManager == null) {
-        	mSensorManager = (SensorManager)getSystemService(SENSOR_SERVICE);
-        }
-        mSensorManager.unregisterListener(listener);
+        unregisterListener();
         wakeLock.release();
     }
 
@@ -173,7 +213,10 @@ public class MainActivity extends FragmentActivity implements SensorEventSenderC
       }
       upvec = max_i;
       updir = Math.signum(listener.mRotationM[8+max_i]);
-      max_i = 0;
+    }
+
+    private void updateReference(String message) {
+      int max_i = 0;
       float max_dot = 0;
       for (int i = 0; i < 3; ++i) {
         float dot = fwdvec[0] * listener.mRotationM[0+i] + fwdvec[1] * listener.mRotationM[4+i];
@@ -183,7 +226,8 @@ public class MainActivity extends FragmentActivity implements SensorEventSenderC
         }
       }
 
-      if (Math.abs(max_dot) > 0.6) {
+      double new_norm = Math.sqrt(listener.mRotationM[0+max_i] * listener.mRotationM[0+max_i] + listener.mRotationM[4+max_i] * listener.mRotationM[4+max_i]);
+      if (Math.abs(max_dot) > 0.6 && new_norm > 0.2) {
         float fwddir = Math.signum(max_dot);
         fwdvec[0] = fwddir * listener.mRotationM[0+max_i];
         fwdvec[1] = fwddir * listener.mRotationM[4+max_i];
@@ -193,24 +237,38 @@ public class MainActivity extends FragmentActivity implements SensorEventSenderC
 
         leftvec[0] = -fwdvec[1];
         leftvec[1] = fwdvec[0];
-        addText("Reference updated");
       }
     }
 
     private void addText(String add) {
-      Time now = new Time();
-      now.setToNow();
-      textview.append(now.format("%H:%M:%S") + ": " + add + "\n");
+      addText(add, true);
+    }
+
+    private void addText(String add, boolean withtime) {
+      String fullmsg = add;
+      if (withtime) {
+          Time now = new Time();
+          now.setToNow();
+          fullmsg = now.format("%H:%M:%S") + ": " + add + "\n";
+      }
+      textview.append(fullmsg);
       textview.post(new Runnable() {
         public void run() {
-          Log.d("nds_sensor", textview.getLayout() + " |");
-          final int scrollAmount = textview.getLayout().getLineTop(textview.getLineCount()) - textview.getHeight();
-          if (scrollAmount > 0)
-              textview.scrollTo(0, scrollAmount);
-          else
-              textview.scrollTo(0, 0);
+          Layout layout = textview.getLayout();
+          if (layout != null) {
+            final int scrollAmount = layout.getLineTop(textview.getLineCount()) - textview.getHeight();
+            if (scrollAmount > 0)
+                textview.scrollTo(0, scrollAmount);
+            else
+                textview.scrollTo(0, 0);
+          }
         }
       });
+    }
+
+    private void sendCommand(String command) {
+        addText(command);
+        listener.sendUDP(command + "\n");
     }
 
     @Override
@@ -226,6 +284,7 @@ public class MainActivity extends FragmentActivity implements SensorEventSenderC
         vec[1] = updir * listener.mRotationM[4+upvec];
         vec[2] = updir * listener.mRotationM[8+upvec];
 
+        updateReference(".");
         /*
         if (upvec != 1) {
           fwdvec[0] = listener.mRotationM[1];
@@ -248,17 +307,13 @@ public class MainActivity extends FragmentActivity implements SensorEventSenderC
         */
 
         if (vec[0] * fwdvec[0] + vec[1] * fwdvec[1] < - thresh) {
-          addText("DOWN");
-          listener.sendUDP("DOWN\n");
+          sendCommand("DOWN");
         } else if (vec[0] * fwdvec[0] + vec[1] * fwdvec[1] > thresh) {
-          addText("UP");
-          listener.sendUDP("UP\n");
+          sendCommand("UP");
         } else if (vec[0] * leftvec[0] + vec[1] * leftvec[1] < - thresh) {
-          addText("RIGHT");
-          listener.sendUDP("RIGHT\n");
+          sendCommand("RIGHT");
         } else if (vec[0] * leftvec[0] + vec[1] * leftvec[1] > thresh) {
-          addText("LEFT");
-          listener.sendUDP("LEFT\n");
+          sendCommand("LEFT");
         } else {
           return;
         }
